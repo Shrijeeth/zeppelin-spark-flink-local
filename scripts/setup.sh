@@ -3,6 +3,14 @@
 # Zeppelin + Spark + Flink Local Practice Setup
 # Supports: Scala, Python, Java, SQL — all in one notebook
 # No cluster needed — everything runs in local mode
+
+# What setup.sh does automatically:                                                                                                                                                                                      
+# 1. Downloads Zeppelin 0.12.0                                                                                                                                                                                         
+# 2. Creates Python 3.11 venv → installs PySpark 3.5.1                                                                                                                                                                   
+# 3. Creates Python 3.10 venv → installs apache-flink 1.17.2                                                                                                                                                           
+# 4. Fixes missing Flink jars (moves from opt/, downloads Scala bridge jars from Maven)                                                                                                                                  
+# 5. Writes zeppelin-env.sh with correct paths                                                                                                                                                                           
+# 6. Patches interpreter.json   
 # =============================================================================
 set -e
 
