@@ -4,13 +4,14 @@
 # Supports: Scala, Python, Java, SQL — all in one notebook
 # No cluster needed — everything runs in local mode
 
-# What setup.sh does automatically:                                                                                                                                                                                      
-# 1. Downloads Zeppelin 0.12.0                                                                                                                                                                                         
-# 2. Creates Python 3.11 venv → installs PySpark 3.5.1                                                                                                                                                                   
-# 3. Creates Python 3.10 venv → installs apache-flink 1.17.2                                                                                                                                                           
-# 4. Fixes missing Flink jars (moves from opt/, downloads Scala bridge jars from Maven)                                                                                                                                  
-# 5. Writes zeppelin-env.sh with correct paths                                                                                                                                                                           
-# 6. Patches interpreter.json   
+# What setup.sh does automatically:
+# 0. Installs Java 11, Python 3.10 & 3.11 if missing (Linux & macOS)
+# 1. Downloads Zeppelin 0.12.0
+# 2. Creates Python 3.11 venv → installs PySpark 3.5.1
+# 3. Creates Python 3.10 venv → installs apache-flink 1.17.2
+# 4. Fixes missing Flink jars (moves from opt/, downloads Scala bridge jars from Maven)
+# 5. Writes zeppelin-env.sh with correct paths
+# 6. Patches interpreter.json
 # =============================================================================
 set -e
 
@@ -31,6 +32,153 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[setup]${NC} $1"; }
 warn() { echo -e "${YELLOW}[warn]${NC}  $1"; }
 fail() { echo -e "${RED}[error]${NC} $1"; exit 1; }
+
+# =============================================================================
+# Phase 0: Auto-install prerequisites (Java 11, Python 3.10, Python 3.11)
+# Detects OS and uses the appropriate package manager.
+# Supports: Ubuntu/Debian (apt-get), macOS (Homebrew)
+# =============================================================================
+
+install_prerequisites() {
+  local OS_TYPE
+  OS_TYPE="$(uname -s)"
+
+  log "=== Installing prerequisites ==="
+  log "Detecting operating system..."
+
+  case "$OS_TYPE" in
+    Linux*)
+      log "Linux detected. Using apt-get for package installation."
+
+      # Ensure we have sudo
+      if ! command -v sudo >/dev/null 2>&1; then
+        fail "sudo is required to install packages on Linux."
+      fi
+
+      # ── Install Java 11 (OpenJDK) ──────────────────────────────────────────
+      if ! command -v java >/dev/null 2>&1; then
+        log "Java not found. Installing OpenJDK 11..."
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq openjdk-11-jdk >/dev/null 2>&1
+        log "  ✓ OpenJDK 11 installed."
+      else
+        CURRENT_JAVA=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d'.' -f1)
+        if [ "$CURRENT_JAVA" != "11" ]; then
+          log "Java $CURRENT_JAVA found, but Java 11 is recommended. Installing OpenJDK 11..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openjdk-11-jdk >/dev/null 2>&1
+          log "  ✓ OpenJDK 11 installed (alongside existing Java $CURRENT_JAVA)."
+        else
+          log "  Java 11 already installed, skipping."
+        fi
+      fi
+
+      # Set JAVA_HOME to Java 11 explicitly
+      if [ -d "/usr/lib/jvm/java-11-openjdk-amd64" ]; then
+        export JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"
+      elif [ -d "/usr/lib/jvm/java-11-openjdk-arm64" ]; then
+        export JAVA_HOME="/usr/lib/jvm/java-11-openjdk-arm64"
+      elif [ -d "/usr/lib/jvm/java-11-openjdk" ]; then
+        export JAVA_HOME="/usr/lib/jvm/java-11-openjdk"
+      fi
+      export PATH="$JAVA_HOME/bin:$PATH"
+
+      # ── Install Python 3.10 and 3.11 via deadsnakes PPA ────────────────────
+      if ! command -v python3.10 >/dev/null 2>&1 || ! command -v python3.11 >/dev/null 2>&1; then
+        log "Adding deadsnakes PPA for Python 3.10/3.11..."
+        sudo apt-get install -y -qq software-properties-common >/dev/null 2>&1
+        sudo add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1
+        sudo apt-get update -qq
+      fi
+
+      if ! command -v python3.11 >/dev/null 2>&1; then
+        log "Installing Python 3.11..."
+        sudo apt-get install -y -qq python3.11 python3.11-venv python3.11-dev >/dev/null 2>&1
+        log "  ✓ Python 3.11 installed."
+      else
+        log "  Python 3.11 already installed, skipping."
+      fi
+
+      if ! command -v python3.10 >/dev/null 2>&1; then
+        log "Installing Python 3.10..."
+        sudo apt-get install -y -qq python3.10 python3.10-venv python3.10-dev >/dev/null 2>&1
+        log "  ✓ Python 3.10 installed."
+      else
+        log "  Python 3.10 already installed, skipping."
+      fi
+      ;;
+
+    Darwin*)
+      log "macOS detected. Using Homebrew for package installation."
+
+      # Ensure Homebrew is available
+      if ! command -v brew >/dev/null 2>&1; then
+        fail "Homebrew is required on macOS. Install from https://brew.sh"
+      fi
+
+      # ── Install Java 11 (OpenJDK) ──────────────────────────────────────────
+      if ! command -v java >/dev/null 2>&1 || ! java -version 2>&1 | grep -q '"11'; then
+        log "Installing OpenJDK 11 via Homebrew..."
+        brew install openjdk@11 2>/dev/null
+        # Symlink so the system java wrapper finds it
+        if [ -d "$(brew --prefix openjdk@11)/libexec/openjdk.jdk" ]; then
+          sudo ln -sfn "$(brew --prefix openjdk@11)/libexec/openjdk.jdk" \
+            /Library/Java/JavaVirtualMachines/openjdk-11.jdk 2>/dev/null || true
+        fi
+        log "  ✓ OpenJDK 11 installed."
+      else
+        log "  Java 11 already installed, skipping."
+      fi
+
+      export JAVA_HOME=$(/usr/libexec/java_home -v 11 2>/dev/null || echo "")
+      if [ -z "$JAVA_HOME" ]; then
+        export JAVA_HOME="$(brew --prefix openjdk@11)/libexec/openjdk.jdk/Contents/Home"
+      fi
+      export PATH="$JAVA_HOME/bin:$PATH"
+
+      # ── Install Python 3.11 ────────────────────────────────────────────────
+      if ! command -v python3.11 >/dev/null 2>&1; then
+        log "Installing Python 3.11 via Homebrew..."
+        brew install python@3.11 2>/dev/null
+        log "  ✓ Python 3.11 installed."
+      else
+        log "  Python 3.11 already installed, skipping."
+      fi
+
+      # ── Install Python 3.10 ────────────────────────────────────────────────
+      if ! command -v python3.10 >/dev/null 2>&1; then
+        log "Installing Python 3.10 via Homebrew..."
+        brew install python@3.10 2>/dev/null
+        log "  ✓ Python 3.10 installed."
+      else
+        log "  Python 3.10 already installed, skipping."
+      fi
+      ;;
+
+    *)
+      fail "Unsupported OS: $OS_TYPE. This script supports Linux (Debian/Ubuntu) and macOS only."
+      ;;
+  esac
+
+  # ── Final verification ─────────────────────────────────────────────────────
+  log ""
+  log "Verifying installed prerequisites..."
+  command -v java >/dev/null 2>&1       || fail "Java installation failed. Please install Java 11 manually."
+  command -v python3.10 >/dev/null 2>&1 || fail "Python 3.10 installation failed. Please install it manually."
+  command -v python3.11 >/dev/null 2>&1 || fail "Python 3.11 installation failed. Please install it manually."
+  command -v curl >/dev/null 2>&1       || fail "curl not found. Please install it manually."
+
+  log "  ✓ Java:       $(java -version 2>&1 | head -1)"
+  log "  ✓ Python 3.10: $(python3.10 --version)"
+  log "  ✓ Python 3.11: $(python3.11 --version)"
+  log "  ✓ curl:        $(curl --version | head -1)"
+  log ""
+  log "=== Prerequisites OK ==="
+  log ""
+}
+
+# Run prerequisite auto-installation
+install_prerequisites
 
 # ── 1. Check prerequisites ────────────────────────────────────────────────────
 log "Checking prerequisites..."
